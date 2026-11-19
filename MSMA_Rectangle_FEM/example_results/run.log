@@ -1,0 +1,10 @@
+Mesh: 4x2 solid, 16x14 box; 285 unknowns before constraints
+step 0: t=0, residual=3.30e-16, iterations=0, mean xi1=0.50000
+step 1: t=0.166667, residual=2.93e-16, iterations=1, mean xi1=0.50000
+step 2: t=0.333333, residual=4.14e-16, iterations=1, mean xi1=0.50000
+step 3: t=0.5, residual=2.12e-16, iterations=1, mean xi1=0.50000
+step 4: t=0.666667, residual=3.47e-14, iterations=4, mean xi1=0.66931
+step 5: t=0.833333, residual=8.05e-14, iterations=2, mean xi1=0.98810
+step 6: t=1, residual=9.69e-14, iterations=3, mean xi1=1.00000
+step 7: t=1.5, residual=3.64e-07, iterations=4, mean xi1=1.00000
+step 8: t=2, residual=5.25e-07, iterations=4, mean xi1=1.00000

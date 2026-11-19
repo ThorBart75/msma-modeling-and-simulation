@@ -1,0 +1,79 @@
+{
+  "aspect_ratio": 2.0,
+  "density": "coarse",
+  "height_m": 0.001,
+  "width_m": 0.002,
+  "dx_m": 0.0005,
+  "dy_m": 0.0005,
+  "box_bounds_m": [
+    [
+      -0.004,
+      -0.0035
+    ],
+    [
+      0.004,
+      0.0035
+    ]
+  ],
+  "solver": {
+    "tangent_mode": "auto",
+    "max_iterations": 45,
+    "residual_tolerance": 3e-06,
+    "max_line_search": 11,
+    "max_cutbacks": 5,
+    "kappa_eta": 1000.0,
+    "depth_m": 1.0
+  },
+  "material": {
+    "E": 5000000000.0,
+    "nu": 0.3,
+    "msat": 514000.0,
+    "K": 136500.0,
+    "bain_long": 0.0188,
+    "bain_short": -0.0394,
+    "Y0": 30000.0,
+    "DY": 29000.0,
+    "Y_phi": 0.0,
+    "evolve_phi": true
+  },
+  "initial_state": {
+    "xi1": 0.5,
+    "eta1": 0.0,
+    "eta2": 0.0,
+    "theta1": 0.0,
+    "theta3": 0.0,
+    "phi": 0.7853981633974483
+  },
+  "stages": [
+    {
+      "duration": 1.0,
+      "steps": 6,
+      "stress_x_mpa": -1.4,
+      "stress_y_mpa": null,
+      "shear_mpa": null,
+      "mu0_h_ext_t": null,
+      "edge_tractions_mpa": {},
+      "name": "Compression in x / variant switching"
+    },
+    {
+      "duration": 1.0,
+      "steps": 2,
+      "stress_x_mpa": null,
+      "stress_y_mpa": null,
+      "shear_mpa": null,
+      "mu0_h_ext_t": [
+        0.0,
+        0.02
+      ],
+      "edge_tractions_mpa": {},
+      "name": "Increase external field in y"
+    }
+  ],
+  "box_material_id": 2,
+  "solid_material_id": 1,
+  "potential": "phi_tilde=0 at outer boundary; h=Hext-grad(phi_tilde)",
+  "pins": "bottom-left ux=uy=0; bottom-right uy=0; reactions reported",
+  "model_limitations": "small strain, plane strain, planar magnetization; finite box; explicit eta regularization",
+  "postprocessing_version": 2,
+  "averaging": "Volume average over body Gauss points only; equal weights for identical affine Q4 cells"
+}

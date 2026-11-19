@@ -3,7 +3,9 @@
 """Local MSMA material update for a small-strain u / scalar-potential FEM.
 
 Python >=3.9; numpy + scipy. Matplotlib is optional, only for the demo plots.
-Run this file in Spyder, or: python msma_material.py --out material_demo
+Run this file in Spyder to replay material_test_inputs.csv next to this file.
+Or: python msma_material.py --csv path/to/material_test_inputs.csv
+The original plane-strain example remains available with --demo.
 
 DEFAULT INPUT: eps=[eps_xx,eps_yy,eps_xy] (tensor shear, NOT gamma_xy), h=[hx,hy]
 with h the LOCAL TOTAL field in A/m, not mu0*h, not H_external, not induction b.
@@ -65,6 +67,14 @@ PLANE = np.array([0,1,3])
 G = np.array([[1.,-1.,0.,0.,0.,0.], [1.,1.,0.,0.,0.,0.],
               [-1.,0.,-1.,0.,0.,0.],[-1.,0.,1.,0.,0.,0.]])
 G0 = np.array([0.,0.,1.,1.])
+
+# ====================== CSV TEST SETTINGS (Spyder) =======================
+CSV_INPUT = "material_test_inputs.csv"  # Relative to this script, or absolute
+CSV_HISTORY_MODE = "sequential"  # "sequential" or "reference" (pointwise check)
+CSV_COMPUTE_TANGENTS = False      # First compare sigma and b only
+CSV_USE_REFERENCE_SEED = False   # Optional diagnostic; NOT imposed solutions
+CSV_SHOW_PLOTS = True
+# ========================================================================
 
 
 @dataclass(frozen=True)
@@ -452,6 +462,130 @@ class MSMAMaterial:
         return {"analytic":analytic,"plus":plus,"minus":minus,"central":.5*(plus+minus),"failures":failures}
 
 
+def read_material_csv(filename):
+    """Read the generated strain/local-field input CSV; no field conversion.
+
+    eps entries use tensor shear; h entries are already LOCAL TOTAL A/m.
+    D columns are provenance only and never enter the material law.
+    """
+    strain_names=["eps_"+s for s in ("xx","yy","zz","xy","yz","xz")]
+    field_names=["h_"+s+"_A_per_m" for s in ("x","y","z")]
+    state_names=["xi1","eta1","eta2","theta1_rad","theta3_rad","phi_rad"]
+    required=(["time","is_initial_state"]+strain_names+field_names
+              +[prefix+s for prefix in ("state_n_","reference_") for s in state_names]
+              +["sigma_reference_"+s+"_Pa" for s in ("xx","yy","zz","xy","yz","xz")]
+              +["b_reference_"+s+"_T" for s in ("x","y","z")])
+    with Path(filename).open(newline="",encoding="utf-8-sig") as f:
+        reader=csv.DictReader(f)
+        missing=set(required)-set(reader.fieldnames or [])
+        if missing:raise ValueError("Missing CSV columns: "+", ".join(sorted(missing)))
+        rows=[]
+        for line,row in enumerate(reader,start=2):
+            try:
+                item={k:float(row[k]) for k in required}
+                if not np.all(np.isfinite(list(item.values()))):raise ValueError("nonfinite value")
+                rows.append(item)
+            except (TypeError,ValueError) as exc:
+                raise ValueError(f"Invalid numeric data in CSV line {line}") from exc
+    if not rows:raise ValueError("CSV is empty")
+    if rows[0]["is_initial_state"]!=1 or any(r["is_initial_state"]!=0 for r in rows[1:]):
+        raise ValueError("Exactly the first CSV row must have is_initial_state=1")
+    if np.any(np.diff([r["time"] for r in rows])<=0):raise ValueError("CSV times must strictly increase")
+    return rows
+
+
+def run_csv(filename,out="material_csv_results",history_mode="sequential",
+            compute_tangents=False,use_reference_seed=False,show=False,parameters=None):
+    """Replay all CSV rows. Sequential mode carries ONLY computed states.
+
+    The first reference state is the prescribed prepared initial state. In
+    reference mode each subsequent row uses its stored reference history,
+    which tests individual updates rather than independent history evolution.
+    Reference stresses/inductions are used only for errors/plots. An optional
+    reference seed changes optimizer starting guesses, not the energy/minimizer.
+    Parameters default to the homogeneous code's values, with fixed phi.
+    """
+    if history_mode not in ("sequential","reference"):
+        raise ValueError("history_mode must be sequential or reference")
+    rows=read_material_csv(filename)
+    parameters=parameters or Parameters(evolve_phi=False)
+    material=MSMAMaterial(parameters,kinematics="3d")
+    state_keys=("xi1","eta1","eta2","theta1_rad","theta3_rad","phi_rad")
+    def state(row,prefix):return State.from_array([row[prefix+k] for k in state_keys])
+    old=state(rows[0],"reference_")
+    records=[]
+    arrays={k:[] for k in ("time","eps","h","state_n","state","sigma","b",
+                          "sigma_reference","b_reference","kkt_scaled")}
+    if compute_tangents:
+        arrays.update({k:[] for k in ("jacobian_engineering","tangent_valid")})
+    for i,row in enumerate(rows):
+        eps=np.array([row["eps_"+s] for s in ("xx","yy","zz","xy","yz","xz")])
+        h=np.array([row["h_"+s+"_A_per_m"] for s in ("x","y","z")])
+        previous=state(row,"state_n_") if history_mode=="reference" and i>0 else old
+        seed=state(row,"reference_") if use_reference_seed or i==0 else None
+        try:
+            response=material.update(eps,h,previous,compute_tangent=compute_tangents,seed=seed)
+        except RuntimeError as exc:
+            raise RuntimeError(f"CSV update failed at row {i}, t={row['time']}: {exc}") from exc
+        sigma=tensor_kelvin(response.sigma_full)/FACTORS
+        sr=np.array([row["sigma_reference_"+s+"_Pa"] for s in ("xx","yy","zz","xy","yz","xz")])
+        br=np.array([row["b_reference_"+s+"_T"] for s in ("x","y","z")])
+        values={"time":row["time"],"eps":eps,"h":h,"state_n":previous.array(),
+                "state":response.state.array(),"sigma":sigma,"b":response.b_full,
+                "sigma_reference":sr,"b_reference":br,"kkt_scaled":response.diagnostics["kkt_scaled"]}
+        if compute_tangents:
+            values.update(jacobian_engineering=response.tangent.jacobian_engineering,
+                          tangent_valid=response.tangent.valid)
+        for k,v in values.items():arrays[k].append(v)
+        records.append([i,row["time"],*sigma,*sr,*response.b_full,*br,
+                        float(np.max(np.abs(sigma-sr))),float(np.max(np.abs(response.b_full-br))),
+                        *response.state.array(),response.diagnostics["kkt_scaled"]])
+        old=response.state
+        if i%max(1,len(rows)//10)==0 or i==len(rows)-1:
+            print(f"CSV {i+1}/{len(rows)}: t={row['time']:.6g}, xi1={old.xi1:.8f}",flush=True)
+    arrays={k:np.asarray(v) for k,v in arrays.items()}
+    out=Path(out);out.mkdir(parents=True,exist_ok=True)
+    np.savez_compressed(out/"csv_response.npz",**arrays)
+    with (out/"csv_comparison.csv").open("w",newline="",encoding="utf-8") as f:
+        writer=csv.writer(f)
+        writer.writerow(["point","time"]
+                        +[prefix+s+"_Pa" for prefix in ("sigma_","sigma_reference_") for s in ("xx","yy","zz","xy","yz","xz")]
+                        +[prefix+s+"_T" for prefix in ("b_","b_reference_") for s in ("x","y","z")]
+                        +["max_sigma_error_Pa","max_b_error_T"]+list(state_keys)+["KKT_scaled"])
+        writer.writerows(records)
+    # Store conventions/settings so a plotted replay remains reproducible.
+    import json
+    from dataclasses import asdict
+    metadata={"input_csv":str(Path(filename).resolve()),"kinematics":"3d",
+              "history_mode":history_mode,"reference_seed":bool(use_reference_seed),
+              "parameters":asdict(parameters),"compute_tangents":bool(compute_tangents),
+              "field_units":"local total h in A/m, no demagnetization added",
+              "strain_order":"xx,yy,zz,xy,yz,xz; tensor shear",
+              "initialization":"first CSV reference state is prescribed as prepared initial state",
+              "dissipation":"active for every material.update; CSV does not store source stage flags"}
+    (out/"csv_run_settings.json").write_text(json.dumps(metadata,indent=2),encoding="utf-8")
+    print("Max stress error [Pa]:",np.max(np.abs(arrays["sigma"]-arrays["sigma_reference"])))
+    print("Max induction error [T]:",np.max(np.abs(arrays["b"]-arrays["b_reference"])))
+    try:import matplotlib.pyplot as plt
+    except ImportError:
+        print("Matplotlib unavailable; CSV and NPZ results saved.");return arrays
+    fig,axes=plt.subplots(2,2,figsize=(12,8),constrained_layout=True)
+    for k in range(2):
+        axes[0,k].plot(arrays["time"],arrays["sigma_reference"][:,k]/1e6,"--",label="homogeneous reference")
+        axes[0,k].plot(arrays["time"],arrays["sigma"][:,k]/1e6,label="local material")
+        axes[0,k].set_ylabel(f"sigma{k+1}{k+1} [MPa]")
+        axes[1,k].plot(arrays["time"],arrays["b_reference"][:,k],"--",label="homogeneous reference")
+        axes[1,k].plot(arrays["time"],arrays["b"][:,k],label="local material")
+        axes[1,k].set_ylabel(f"b{k+1} [T]")
+    for ax in axes.flat:ax.set_xlabel("time");ax.grid(True);ax.legend()
+    fig.suptitle("CSV replay: "+history_mode)
+    fig.savefig(out/"csv_comparison.png",dpi=150)
+    if show:plt.show()
+    else:plt.close(fig)
+    print("CSV comparison outputs:",out.resolve())
+    return arrays
+
+
 def demo(out="material_demo",show=False):
     """Prescribed plane-strain + local-total-field path, no spatial FEM yet."""
     p=Parameters(evolve_phi=True,Y_phi=0.)
@@ -499,7 +633,23 @@ def demo(out="material_demo",show=False):
 
 if __name__=="__main__":
     parser=argparse.ArgumentParser(description=__doc__,formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument("--out",default="material_demo")
+    parser.add_argument("--out",default=None)
+    parser.add_argument("--csv",default=None,help="Path to material_test_inputs.csv")
+    parser.add_argument("--demo",action="store_true",help="Run original plane-strain demo instead of CSV")
+    parser.add_argument("--history-mode",choices=["sequential","reference"],default=CSV_HISTORY_MODE)
+    parser.add_argument("--tangents",action="store_true",default=CSV_COMPUTE_TANGENTS)
+    parser.add_argument("--reference-seed",action="store_true",default=CSV_USE_REFERENCE_SEED)
     parser.add_argument("--show",action="store_true")
+    parser.add_argument("--no-show",action="store_true")
     args=parser.parse_args()
-    demo(args.out,args.show)
+    show=(CSV_SHOW_PLOTS or args.show) and not args.no_show
+    if args.demo:
+        if args.csv:parser.error("Choose either --demo or --csv")
+        demo(args.out or "material_demo",show)
+    else:
+        filename=Path(args.csv) if args.csv else Path(CSV_INPUT)
+        if not filename.is_absolute():filename=Path(__file__).resolve().parent/filename
+        if not filename.is_file():
+            raise FileNotFoundError(f"CSV input not found: {filename}. Place material_test_inputs.csv next to this script, set CSV_INPUT, or use --csv PATH / --demo.")
+        run_csv(filename,args.out or filename.parent/"material_csv_results",args.history_mode,
+                args.tangents,args.reference_seed,show)
